@@ -1,0 +1,25 @@
+---
+binary: ./minio
+bind: ":4902"
+id_start: 9000 # Used as port in below command
+arguments:
+  - "server"
+  - "-C"
+  - "~/cloudscale/minio-%{fqdn}s"
+  - "--quiet"
+  - "--address"
+  - ":%{id}d"
+  - "~/cloudscale/minio-%{fqdn}s"
+
+header: authorization
+regex: "credential=([^/]+)"
+max_procs: 1000
+timeout: 1800
+
+data:
+  2K227DGDL82P303XR999:
+    fqdn: test01.com
+    key: kEbEDkG2C9CPeoCRraQENg+5j+G7HAerhzloAlXw
+  2K227DGDL82P303XR998:
+    fqdn: test02.com
+    key: kEbEDkG2C9CPeoCRraQENg+5j+G7HAerhzloAlYw
