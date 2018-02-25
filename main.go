@@ -22,16 +22,20 @@ type Options struct {
     Config string `short:"c" long:"config" description:"Config file to load settings from" required:"true"`
 }
 
+type ConfigProgram struct {
+    Binary string   `yaml:"binary"`
+    Args   []string `yaml:"args"`
+    Env    []string `yaml:"env"`
+}
+
 type Config struct {
-    Binary    string   `yaml:"binary"`
-    Arguments []string `yaml:"arguments"`
-    Id_start  int      `yaml:"id_start"`
-    Header    string   `yaml:"header"`
-    Regex     string   `yaml:"regex"`
-    Max_procs int      `yaml:"max_procs"`
-    Timeout   int      `yaml:"timeout"`
-    Bind      string   `yaml:"bind"`
-    Lookup    string   `yaml:"lookup_field"`
+    Program   ConfigProgram                     `yaml:"program"` 
+    Id_start  int                               `yaml:"id_start"`
+    Header    string                            `yaml:"header"`
+    Regex     string                            `yaml:"regex"`
+    Max_procs int                               `yaml:"max_procs"`
+    Timeout   int                               `yaml:"timeout"`
+    Bind      string                            `yaml:"bind"`
     Data      map[string]map[string]interface{} `yaml:"data"`
 }
 
@@ -48,16 +52,25 @@ func Tprintf(format string, params map[string]interface{}) string {
 func worker(config *Config, data map[string]interface{}) *exec.Cmd {
 
     var cmdline []string
+    var env []string
 
-    for _, v := range config.Arguments {
+    for _, v := range config.Program.Args {
         cmdline = append(cmdline, Tprintf(v, data))
     }
 
+    for _, v := range config.Program.Env {
+        env = append(env, Tprintf(v, data))
+    }
+
     log.Printf("Starting worker process with command line %+v\n", cmdline)
-    cmd := exec.Command(config.Binary, cmdline...)
+    cmd := exec.Command(config.Program.Binary, cmdline...)
+
+    // Set command environment
+    cmd.Env = env
 
     cmd.Stderr = os.Stderr
-    stdin, err := cmd.StdinPipe()
+
+    _, err := cmd.StdinPipe()
     if nil != err {
         log.Fatalf("Error obtaining stdin: %s", err.Error())
     }
@@ -71,8 +84,7 @@ func worker(config *Config, data map[string]interface{}) *exec.Cmd {
     go func(reader io.Reader) {
         scanner := bufio.NewScanner(reader)
         for scanner.Scan() {
-                log.Printf("Reading from subprocess: %s", scanner.Text())
-                stdin.Write([]byte("some sample text\n"))
+            log.Printf("[ID %d]: %s", data["id"], scanner.Text())
         }
     }(reader)
 
@@ -85,10 +97,12 @@ func worker(config *Config, data map[string]interface{}) *exec.Cmd {
 
 func loadConfig(Conf_file string) *Config {
     config := &Config{
-        Binary: "minio", 
+        Program: ConfigProgram {
+            Binary: "minio",
+        },
         Max_procs: 100, 
         Timeout: 300, 
-        Bind: ":4901",
+        Bind: "localhost:4901",
     }
 
     yamlFile, err := ioutil.ReadFile(Conf_file)
@@ -153,14 +167,13 @@ func main() {
             return
         }
 
-        var entry_id int
-
         // Get the ID uniquely assigned to this entry or assign one
-        entry_id, ok = entry["id"].(int)
+        entry_id, ok := entry["id"].(int)
         if !ok {
             log.Printf("Entry %s does not have an ID asigned - allocating %d", key, entry_ctr)
             entry_id = entry_ctr
             entry["id"] = entry_id
+            entry["key"] = key
             entry_ctr ++
         }
 
@@ -175,6 +188,7 @@ func main() {
 
             log.Printf("Entry %s has no running process, starting...", key)
 
+            // Worker loop, runs until worker dies and then cleans itself up
             go func(entry map[string]interface{}, entry_id int) {
                 cmd := worker(config, entry)
                 entry_cmd[entry_id] = cmd
@@ -191,9 +205,16 @@ func main() {
         }
 
         if status == "starting" {
-            log.Printf("Waiting for worker process for entry %s to start listening on %d", key, entry_id)
+            log.Printf("Waiting for worker process with entry %s to start listening on %d", key, entry_id)
             for {
-                conn, _ := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", entry_id),500 * time.Millisecond)
+                // If process dies before starting, exit loop
+                if entry_status[entry_id] != "starting" {
+                    log.Printf("Entry %s process died on startup!", key)
+                    http.Error(w, "Bad Gateway", 502)
+                    return
+                }
+
+                conn, _ := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", entry_id),500 * time.Millisecond)
                 if conn != nil {
                     conn.Close()
                     log.Printf("Worker process for entry %s is listening on %d", key, entry_id)
@@ -209,7 +230,7 @@ func main() {
         if !ok {
             url := r.URL
             url.Scheme = "http"
-            url.Host = fmt.Sprintf("localhost:%d", entry_id)
+            url.Host = fmt.Sprintf("127.0.0.1:%d", entry_id)
             proxy = httputil.NewSingleHostReverseProxy(url)
             proxies[entry_id] = proxy
         }
