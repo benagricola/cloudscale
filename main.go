@@ -1,21 +1,25 @@
 package main
 
-import "log"
-import "os"
-import "gopkg.in/yaml.v2"
-import "io"
-import "io/ioutil"
-import "bufio"
-import "os/exec"
-import "fmt"
-import "strings"
-import "regexp"
-import "time"
-import "net"
-import "net/http"
-import "net/http/httputil"
-
-import "github.com/jessevdk/go-flags"
+import (
+    "log"
+    "os"
+    "gopkg.in/yaml.v2"
+    "io"
+    "io/ioutil"
+    "bufio"
+    "os/exec"
+    "fmt"
+    "math"
+    "strings"
+    "regexp"
+    "time"
+    "net"
+    "net/url"
+    "net/http"
+    "net/http/httputil"
+    
+    "github.com/jessevdk/go-flags"
+)
 
 
 type Options struct {
@@ -101,6 +105,7 @@ func loadConfig(Conf_file string) *Config {
             Binary: "minio",
         },
         Max_procs: 100, 
+        Id_start: 15000,
         Timeout: 300, 
         Bind: "localhost:4901",
     }
@@ -115,6 +120,11 @@ func loadConfig(Conf_file string) *Config {
         log.Fatalf("Error reading config file %s: %s", Conf_file, err.Error())
     }
 
+    max_id := int(math.Pow(2, 16)) - config.Max_procs
+
+    if config.Id_start > max_id {
+        log.Fatalf("id_start may not be more than %d, in case ID is used as a port number.", max_id)
+    }
     return config
 }
 
@@ -128,6 +138,7 @@ func main() {
 
 
     log.Printf("Binding on %s for new HTTP connections...", config.Bind)
+    log.Printf("Child Processes will start with IDs %d - %d...", config.Id_start, config.Id_start + config.Max_procs-1)
 
     // Check that regexp compiles
     header_regex, err := regexp.Compile(config.Regex)
@@ -228,12 +239,12 @@ func main() {
         proxy, ok := proxies[entry_id]
 
         if !ok {
-            url := r.URL
-            url.Scheme = "http"
-            url.Host = fmt.Sprintf("127.0.0.1:%d", entry_id)
-            proxy = httputil.NewSingleHostReverseProxy(url)
+            url := url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", entry_id), Path: "/"}
+            proxy = httputil.NewSingleHostReverseProxy(&url)
             proxies[entry_id] = proxy
         }
+        r.Header.Set("Host", r.Host)
+
         entry_idle[entry_id] = time.Now()
         proxy.ServeHTTP(w, r)
     })

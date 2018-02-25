@@ -1,15 +1,19 @@
 ---
-binary: ./minio
+program:
+  binary: ./minio
+  env:
+    - "MINIO_ACCESS_KEY=%{key}s"
+    - "MINIO_SECRET_KEY=%{secret_key}s"
+  args:
+    - "server"
+    - "-C"
+    - "/Users/bagricola/cloudscale/minio-%{fqdn}s"
+    - "--quiet"
+    - "--address"
+    - ":%{id}d"
+    - "/Users/bagricola/cloudscale/minio-%{fqdn}s"
 bind: ":4902"
-id_start: 9000 # Used as port in below command
-arguments:
-  - "server"
-  - "-C"
-  - "~/cloudscale/minio-%{fqdn}s"
-  - "--quiet"
-  - "--address"
-  - ":%{id}d"
-  - "~/cloudscale/minio-%{fqdn}s"
+id_start: 9000 # Used as starting port in above command
 
 header: authorization
 regex: "credential=([^/]+)"
