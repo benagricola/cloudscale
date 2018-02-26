@@ -13,7 +13,6 @@ import (
     "strings"
     "regexp"
     "time"
-    "net"
     "net/url"
     "net/http"
     "net/http/httputil"
@@ -215,8 +214,17 @@ func main() {
             entry_status[entry_id] = status
         }
 
+
         if status == "starting" {
             log.Printf("Waiting for worker process with entry %s to start listening on %d", key, entry_id)
+
+            addr := fmt.Sprintf("http://127.0.0.1:%d", entry_id)
+
+            // Timeout HTTP requests after 1 second
+            http_client := &http.Client{
+                Timeout: 1 * time.Second,
+            }
+
             for {
                 // If process dies before starting, exit loop
                 if entry_status[entry_id] != "starting" {
@@ -225,14 +233,24 @@ func main() {
                     return
                 }
 
-                conn, _ := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", entry_id),500 * time.Millisecond)
-                if conn != nil {
-                    conn.Close()
-                    log.Printf("Worker process for entry %s is listening on %d", key, entry_id)
-                    status = "started"
-                    entry_status[entry_id] = status
-                    break
+                // Make HTTP request to service. If it returns >= 500, assume not started yet
+                resp, err := http_client.Get(addr)
+                if err == nil {
+                    defer resp.Body.Close()
+                    if resp.StatusCode < 500 {
+                        log.Printf("Worker process for entry %s is listening on %d", key, entry_id)
+                        status = "started"
+                        entry_status[entry_id] = status
+                        break
+                    } else {
+                        log.Printf("Worker process startup check for entry %s received error status: %+v", key, resp.StatusCode)
+                    }
+
+                } else {
+                    log.Printf("Worker process startup check for entry %s received error: %+v", key, err)
                 }
+                // Sleep here to avoid request spam 
+                time.Sleep(500 * time.Millisecond)
             }
         }
 
