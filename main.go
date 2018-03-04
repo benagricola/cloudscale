@@ -11,6 +11,7 @@ import (
     "fmt"
     "math"
     "strings"
+    "sync"
     "regexp"
     "time"
     "net/url"
@@ -150,6 +151,10 @@ func main() {
     entry_status := make(map[int] string)
     entry_cmd    := make(map[int] *exec.Cmd)
     entry_idle   := make(map[int] time.Time)
+    proxies_lock      := sync.RWMutex{}
+    entry_status_lock := sync.RWMutex{}
+    entry_cmd_lock    := sync.RWMutex{}
+    entry_idle_lock   := sync.RWMutex{}
 
     entry_ctr := config.Id_start
 
@@ -188,7 +193,9 @@ func main() {
         }
 
         // Now we need to work out if we need to start a process
+        entry_status_lock.RLock()
         status, ok := entry_status[entry_id]
+        entry_status_lock.RUnlock()
         if status == "stopped" || !ok {
             if len(entry_cmd) >= config.Max_procs {
                 log.Printf("Entry %s has no running process but max procs of %d reached!", key, config.Max_procs)
@@ -201,17 +208,30 @@ func main() {
             // Worker loop, runs until worker dies and then cleans itself up
             go func(entry map[string]interface{}, entry_id int) {
                 cmd := worker(config, entry)
+                entry_cmd_lock.Lock()
                 entry_cmd[entry_id] = cmd
+                entry_cmd_lock.Unlock()
                 cmd.Wait()
                 log.Printf("Worker process for entry %s died or was killed...", entry["key"])
+
+                entry_status_lock.Lock()
                 entry_status[entry_id] = "stopped"
+                entry_status_lock.Unlock()
+
+                entry_idle_lock.Lock()
                 delete(entry_idle, entry_id)
+                entry_idle_lock.Unlock()
+
+                entry_cmd_lock.Lock()
                 delete(entry_cmd, entry_id)
+                entry_cmd_lock.Unlock()
             }(entry, entry_id)
 
             // Set this process as starting
             status = "starting"
+            entry_status_lock.Lock()
             entry_status[entry_id] = status
+            entry_status_lock.Unlock()
         }
 
 
@@ -227,11 +247,14 @@ func main() {
 
             for {
                 // If process dies before starting, exit loop
+                entry_status_lock.RLock()
                 if entry_status[entry_id] != "starting" {
+                    entry_status_lock.RUnlock()
                     log.Printf("Entry %s process died on startup!", key)
                     http.Error(w, "Bad Gateway", 502)
                     return
                 }
+                entry_status_lock.RUnlock()
 
                 // Make HTTP request to service. If it returns >= 500, assume not started yet
                 resp, err := http_client.Get(addr)
@@ -240,7 +263,9 @@ func main() {
                     if resp.StatusCode < 500 {
                         log.Printf("Worker process for entry %s is listening on %d", key, entry_id)
                         status = "started"
+                        entry_status_lock.Lock()
                         entry_status[entry_id] = status
+                        entry_status_lock.Unlock()
                         break
                     } else {
                         log.Printf("Worker process startup check for entry %s received error status: %+v", key, resp.StatusCode)
@@ -254,16 +279,23 @@ func main() {
             }
         }
 
+        proxies_lock.RLock()
         proxy, ok := proxies[entry_id]
+        proxies_lock.RUnlock()
 
         if !ok {
             url := url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", entry_id), Path: "/"}
             proxy = httputil.NewSingleHostReverseProxy(&url)
+
+            proxies_lock.Lock()
             proxies[entry_id] = proxy
+            proxies_lock.Unlock()
         }
         r.Header.Set("Host", r.Host)
 
+        entry_idle_lock.Lock()
         entry_idle[entry_id] = time.Now()
+        entry_idle_lock.Unlock()
         proxy.ServeHTTP(w, r)
     })
 
@@ -275,14 +307,18 @@ func main() {
         for {
             <-time.After(5 * time.Second)
             now := time.Now()
+            entry_idle_lock.RLock()
             for entry_id, last_activity := range entry_idle {
                 idle_time := now.Sub(last_activity)
                 if idle_time > timeout {
+                    entry_cmd_lock.Lock()
                     cmd := entry_cmd[entry_id]
+                    entry_cmd_lock.Unlock()
                     log.Printf("Reaping process for entry ID %d with idle timer %+v", entry_id, idle_time)
                     cmd.Process.Kill()
                 }
             }
+            entry_idle_lock.RUnlock()
         }
     }()
     log.Fatal(http.ListenAndServe(config.Bind, nil))
