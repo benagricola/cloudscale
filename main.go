@@ -249,8 +249,8 @@ func main() {
                 // If process dies before starting, exit loop
                 entry_status_lock.RLock()
                 if entry_status[entry_id] != "starting" {
+                    log.Printf("Entry %s process died on startup, status is %s!", key, entry_status[entry_id])
                     entry_status_lock.RUnlock()
-                    log.Printf("Entry %s process died on startup!", key)
                     http.Error(w, "Bad Gateway", 502)
                     return
                 }
