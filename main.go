@@ -150,6 +150,9 @@ func main() {
         log.Fatalf("Error compiling header regex %s: %s", config.Regex, err.Error())
     }
 
+    log.Printf("Process timeout is %d seconds...", config.ProcessTimeout)
+    log.Printf("HTTP timeout is %d seconds...", config.HttpTimeout)
+
     TimeoutTransport := &http.Transport{
         Proxy: nil,
         DialContext: (&net.Dialer{
