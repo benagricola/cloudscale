@@ -153,16 +153,19 @@ func main() {
     log.Printf("Process timeout is %d seconds...", config.ProcessTimeout)
     log.Printf("HTTP timeout is %d seconds...", config.HttpTimeout)
 
+    httpTimeout := time.Duration(config.HttpTimeout)
+
     TimeoutTransport := &http.Transport{
         Proxy: nil,
         DialContext: (&net.Dialer{
-                Timeout:   time.Duration(config.HttpTimeout) * time.Second,
-                KeepAlive: time.Duration(config.HttpTimeout) * time.Second,
+                Timeout:   httpTimeout * time.Second,
+                KeepAlive: httpTimeout * time.Second,
                 DualStack: true,
         }).DialContext,
         MaxIdleConns:          0,
         MaxIdleConnsPerHost:   10,
-        IdleConnTimeout:       time.Duration(config.HttpTimeout) * time.Second,
+        IdleConnTimeout:       httpTimeout * time.Second,
+        ResponseHeaderTimeout: httpTimeout * time.Second,
         TLSHandshakeTimeout:   10 * time.Second,
         ExpectContinueTimeout: 10 * time.Second,
     }
