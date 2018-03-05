@@ -14,6 +14,7 @@ import (
     "sync"
     "regexp"
     "time"
+    "net"
     "net/url"
     "net/http"
     "net/http/httputil"
@@ -33,14 +34,15 @@ type ConfigProgram struct {
 }
 
 type Config struct {
-    Program   ConfigProgram                     `yaml:"program"` 
-    Id_start  int                               `yaml:"id_start"`
-    Header    string                            `yaml:"header"`
-    Regex     string                            `yaml:"regex"`
-    Max_procs int                               `yaml:"max_procs"`
-    Timeout   int                               `yaml:"timeout"`
-    Bind      string                            `yaml:"bind"`
-    Data      map[string]map[string]interface{} `yaml:"data"`
+    Program        ConfigProgram                     `yaml:"program"` 
+    Id_start       int                               `yaml:"id_start"`
+    Header         string                            `yaml:"header"`
+    Regex          string                            `yaml:"regex"`
+    Max_procs      int                               `yaml:"max_procs"`
+    ProcessTimeout int                               `yaml:"process_timeout"`
+    HttpTimeout int                               `yaml:"http_timeout"`
+    Bind           string                            `yaml:"bind"`
+    Data           map[string]map[string]interface{} `yaml:"data"`
 }
 
 var options Options
@@ -106,7 +108,8 @@ func loadConfig(Conf_file string) *Config {
         },
         Max_procs: 100, 
         Id_start: 15000,
-        Timeout: 300, 
+        ProcessTimeout: 900, 
+        HttpTimeout: 300,
         Bind: "localhost:4901",
     }
 
@@ -145,6 +148,20 @@ func main() {
 
     if nil != err {
         log.Fatalf("Error compiling header regex %s: %s", config.Regex, err.Error())
+    }
+
+    TimeoutTransport := &http.Transport{
+        Proxy: nil,
+        DialContext: (&net.Dialer{
+                Timeout:   time.Duration(config.HttpTimeout) * time.Second,
+                KeepAlive: time.Duration(config.HttpTimeout) * time.Second,
+                DualStack: true,
+        }).DialContext,
+        MaxIdleConns:          0,
+        MaxIdleConnsPerHost:   10,
+        IdleConnTimeout:       time.Duration(config.HttpTimeout) * time.Second,
+        TLSHandshakeTimeout:   10 * time.Second,
+        ExpectContinueTimeout: 10 * time.Second,
     }
 
     proxies      := make(map[int] *httputil.ReverseProxy)
@@ -242,7 +259,7 @@ func main() {
 
             // Timeout HTTP requests after 1 second
             http_client := &http.Client{
-                Timeout: 1 * time.Second,
+                Timeout: time.Duration(1) * time.Second,
             }
 
             for {
@@ -286,6 +303,7 @@ func main() {
         if !ok {
             url := url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", entry_id), Path: "/"}
             proxy = httputil.NewSingleHostReverseProxy(&url)
+            proxy.Transport = TimeoutTransport
 
             proxies_lock.Lock()
             proxies[entry_id] = proxy
@@ -303,7 +321,7 @@ func main() {
 
     // Periodically reap inactive processes
     go func() {
-        timeout := time.Duration(config.Timeout) * time.Second
+        timeout := time.Duration(config.ProcessTimeout) * time.Second
         for {
             <-time.After(5 * time.Second)
             now := time.Now()
