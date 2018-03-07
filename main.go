@@ -22,6 +22,11 @@ import (
     "github.com/jessevdk/go-flags"
 )
 
+const (
+    StatusStopped = iota // 0
+    StatusStarting
+    StatusStarted
+)
 
 type Options struct {
     Config string `short:"c" long:"config" description:"Config file to load settings from" required:"true"`
@@ -171,7 +176,7 @@ func main() {
     }
 
     proxies      := make(map[int] *httputil.ReverseProxy)
-    entry_status := make(map[int] string)
+    entry_status := make(map[int] int)
     entry_cmd    := make(map[int] *exec.Cmd)
     entry_idle   := make(map[int] time.Time)
     proxies_lock      := sync.RWMutex{}
@@ -219,7 +224,7 @@ func main() {
         entry_status_lock.RLock()
         status, ok := entry_status[entry_id]
         entry_status_lock.RUnlock()
-        if status == "stopped" || !ok {
+        if status == StatusStopped || !ok {
             if len(entry_cmd) >= config.Max_procs {
                 log.Printf("Entry %s has no running process but max procs of %d reached!", key, config.Max_procs)
                 http.Error(w, "Access Denied", 401)
@@ -238,7 +243,7 @@ func main() {
                 log.Printf("Worker process for entry %s died or was killed...", entry["key"])
 
                 entry_status_lock.Lock()
-                entry_status[entry_id] = "stopped"
+                entry_status[entry_id] = StatusStopped
                 entry_status_lock.Unlock()
 
                 entry_idle_lock.Lock()
@@ -251,14 +256,14 @@ func main() {
             }(entry, entry_id)
 
             // Set this process as starting
-            status = "starting"
+            status = StatusStarting
             entry_status_lock.Lock()
             entry_status[entry_id] = status
             entry_status_lock.Unlock()
         }
 
 
-        if status == "starting" {
+        if status == StatusStarting {
             log.Printf("Waiting for worker process with entry %s to start listening on %d", key, entry_id)
 
             addr := fmt.Sprintf("http://127.0.0.1:%d", entry_id)
@@ -268,38 +273,56 @@ func main() {
                 Timeout: time.Duration(1) * time.Second,
             }
 
-            for {
-                // If process dies before starting, exit loop
-                entry_status_lock.RLock()
-                if entry_status[entry_id] != "starting" {
-                    log.Printf("Entry %s process died on startup, status is %s!", key, entry_status[entry_id])
+            StartLoop:
+                for {
+                    entry_status_lock.RLock()
+                    cur_status, ok := entry_status[entry_id]
                     entry_status_lock.RUnlock()
-                    http.Error(w, "Bad Gateway", 502)
-                    return
-                }
-                entry_status_lock.RUnlock()
 
-                // Make HTTP request to service. If it returns >= 500, assume not started yet
-                resp, err := http_client.Get(addr)
-                if err == nil {
-                    defer resp.Body.Close()
-                    if resp.StatusCode < 500 {
-                        log.Printf("Worker process for entry %s is listening on %d", key, entry_id)
-                        status = "started"
-                        entry_status_lock.Lock()
-                        entry_status[entry_id] = status
-                        entry_status_lock.Unlock()
-                        break
-                    } else {
-                        log.Printf("Worker process startup check for entry %s received error status: %+v", key, resp.StatusCode)
+                    if !ok {
+                        log.Printf("Entry %s process status could not be found, aborting!", key)
+                        http.Error(w, "Bad Gateway", 502)
+                        return
                     }
 
-                } else {
-                    log.Printf("Worker process startup check for entry %s received error: %+v", key, err)
+                    switch cur_status {
+                        // If process is started by another process, short circuit and proxy
+                        case StatusStarted:
+                            log.Printf("Entry %s process was successfully started by another request...!", key)
+                            break StartLoop
+
+                        // If process is still starting break to avoid the default
+                        case StatusStarting:
+                            break
+
+                        default:
+                            log.Printf("Entry %s process died on startup, status is %+v!", key, cur_status)
+                            http.Error(w, "Bad Gateway", 502)
+                            return
+                    }
+
+
+                    // Make HTTP request to service. If it returns >= 500, assume not started yet
+                    resp, err := http_client.Get(addr)
+                    if err == nil {
+                        defer resp.Body.Close()
+                        if resp.StatusCode < 500 {
+                            log.Printf("Worker process for entry %s is listening on %d", key, entry_id)
+                            status = StatusStarted 
+                            entry_status_lock.Lock()
+                            entry_status[entry_id] = status
+                            entry_status_lock.Unlock()
+                            break
+                        } else {
+                            log.Printf("Worker process startup check for entry %s received error status: %+v", key, resp.StatusCode)
+                        }
+
+                    } else {
+                        log.Printf("Worker process startup check for entry %s received error: %+v", key, err)
+                    }
+                    // Sleep here to avoid request spam 
+                    time.Sleep(500 * time.Millisecond)
                 }
-                // Sleep here to avoid request spam 
-                time.Sleep(500 * time.Millisecond)
-            }
         }
 
         proxies_lock.RLock()
