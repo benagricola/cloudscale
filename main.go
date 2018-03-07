@@ -213,7 +213,7 @@ func main() {
         // Get the ID uniquely assigned to this entry or assign one
         entry_id, ok := entry["id"].(int)
         if !ok {
-            log.Printf("Entry %s does not have an ID asigned - allocating %d", key, entry_ctr)
+            log.Printf("Entry %s does not have an ID assigned - allocating %d", key, entry_ctr)
             entry_id = entry_ctr
             entry["id"] = entry_id
             entry["key"] = key
